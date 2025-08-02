@@ -1,0 +1,195 @@
+name: newedt build Android CSV Credential Formatter App
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Create Android project structure and logic
+        run: |
+          echo "Creating folders..."
+          mkdir -p app/src/main/java/com/example/credentials
+          mkdir -p app/src/main/res/{layout,values,mipmap-anydpi-v26}
+
+          echo "Creating gradle.properties..."
+          cat <<EOF > gradle.properties
+android.useAndroidX=true
+android.enableJetifier=true
+EOF
+
+          echo "Creating settings.gradle..."
+          echo "include ':app'" > settings.gradle
+
+          echo "Creating top-level build.gradle..."
+          cat <<EOF > build.gradle
+buildscript {
+    repositories { google(); mavenCentral(); }
+    dependencies { classpath 'com.android.tools.build:gradle:8.2.1' }
+}
+allprojects {
+    repositories { google(); mavenCentral(); }
+}
+task clean(type: Delete) {
+    delete rootProject.buildDir
+}
+EOF
+
+          echo "Creating app/build.gradle..."
+          cat <<EOF > app/build.gradle
+plugins {
+    id 'com.android.application'
+}
+android {
+    namespace 'com.example.credentials'
+    compileSdk 34
+    defaultConfig {
+        applicationId "com.example.credentials"
+        minSdk 26 // required for MediaStore
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    buildFeatures {
+        viewBinding true
+    }
+}
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+}
+EOF
+
+          echo "Creating AndroidManifest.xml..."
+          cat <<EOF > app/src/main/AndroidManifest.xml
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application
+        android:allowBackup="true"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.Credentials">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
+EOF
+
+          echo "Creating strings.xml..."
+          cat <<EOF > app/src/main/res/values/strings.xml
+<resources>
+    <string name="app_name">Credential Viewer</string>
+</resources>
+EOF
+
+          echo "Creating themes.xml..."
+          cat <<EOF > app/src/main/res/values/themes.xml
+<resources>
+    <style name="Theme.Credentials" parent="Theme.MaterialComponents.DayNight.DarkActionBar" />
+</resources>
+EOF
+
+          echo "Creating layout file..."
+          cat <<EOF > app/src/main/res/layout/activity_main.xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+        <TextView
+            android:id="@+id/content_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Loading credentials..."
+            android:textSize="14sp"
+            android:fontFamily="monospace" />
+    </ScrollView>
+</LinearLayout>
+EOF
+
+          echo "Creating MainActivity.java..."
+          cat <<EOF > app/src/main/java/com/example/credentials/MainActivity.java
+package com.example.credentials;
+
+import android.os.Bundle;
+import android.widget.TextView;
+import androidx.appcompat.app.AppCompatActivity;
+
+public class MainActivity extends AppCompatActivity {
+    String[][] data = {
+        {"10.40.60.55", "http://10.40.60.55:9997/user/guest", "guest", "spring19"},
+        {"www.4shared.co", "https://www.4shared.co", "alexanderakay", "akmantar"},
+        {"portal.abacusnex.com", "https://portal.abacusnex.com", "dnakay@akalav", "S@\$Fs24f"},
+        {"relativity.acornls.net", "https://relativity.acornls.net", "Richard.Sullivan", "Richsrel1#"},
+        {"ams.adservices", "https://ams.adservices", "dnakay@akalav", "A!#Xa13xA!#X"},
+        {"rxtools.aetmanage.com", "https://rxtools.aetmanage.com", "Akmantar", "A!#Xa13xS@\$Fs"},
+        {"www.airbnb.com", "https://www.airbnb.com", "4152181661", "J&[J7l9l"},
+        {"www.airbnb.com", "https://www.airbnb.com", "dnakay@akalav", "J&[J7l9l"},
+    };
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+        TextView content = findViewById(R.id.content_text);
+        StringBuilder builder = new StringBuilder();
+        for (String[] row : data) {
+            builder.append("Name:     ").append(row[0]).append("\\n");
+            builder.append("URL:      ").append(row[1]).append("\\n");
+            builder.append("Username: ").append(row[2]).append("\\n");
+            builder.append("Password: ").append(row[3]).append("\\n");
+            builder.append("------------------------------------\\n");
+        }
+        content.setText(builder.toString());
+    }
+}
+EOF
+
+      - name: Download Gradle and Build APK
+        run: |
+          wget https://services.gradle.org/distributions/gradle-8.5-bin.zip
+          unzip gradle-8.5-bin.zip
+          ./gradle-8.5/bin/gradle :app:assembleDebug --stacktrace
+
+      - name: Upload APK to Bashupload
+        run: |
+          echo "Uploading APK..."
+          APK_FILE=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          if [ -f "$APK_FILE" ]; then
+            curl -F "file=@$APK_FILE" https://bashupload.com
+          else
+            echo "APK not found!"
+            exit 1
+          fi
