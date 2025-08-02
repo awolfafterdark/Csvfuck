@@ -1,0 +1,309 @@
+# .github/workflows/android_build.yml
+name: Generate and Build Android CSV to TXT Converter
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # Step 1: Create the Android application files
+      # The app itself will now handle the CSV to TXT conversion.
+      - name: Create Android Project Structure and Files
+        run: |
+          echo "Creating Android project file structure for CSV Converter App..."
+          # Create directory structure
+          mkdir -p app/src/main/java/com/example/csvconverter
+          mkdir -p app/src/main/res/layout
+          mkdir -p app/src/main/res/values
+
+          # --- Create Top-Level build.gradle ---
+          echo "Creating top-level build.gradle..."
+          cat <<EOF > build.gradle
+          buildscript {
+              repositories { google(); mavenCentral(); }
+              dependencies { classpath 'com.android.tools.build:gradle:8.2.1'; }
+          }
+          allprojects {
+              repositories { google(); mavenCentral(); }
+          }
+          task clean(type: Delete) { delete rootProject.buildDir; }
+          EOF
+
+          # --- Create App-Level build.gradle ---
+          echo "Creating app/build.gradle..."
+          cat <<EOF > app/build.gradle
+          plugins { id 'com.android.application'; }
+          android {
+              namespace 'com.example.csvconverter'
+              compileSdk 34
+              defaultConfig {
+                  applicationId "com.example.csvconverter"
+                  minSdk 26 # Min SDK 26 for MediaStore API
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_1_8
+                  targetCompatibility JavaVersion.VERSION_1_8
+              }
+              // Enable View Binding
+              buildFeatures {
+                  viewBinding true
+              }
+          }
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'com.google.android.material:material:1.11.0'
+          }
+          EOF
+
+          # --- Create AndroidManifest.xml with Intent Filter for CSV ---
+          echo "Creating AndroidManifest.xml..."
+          cat <<EOF > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <!-- No special permissions needed for MediaStore on Android 10+ -->
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="@string/app_name"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.CSVConverter">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.intent.action.VIEW" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <data android:scheme="content" android:mimeType="text/csv" />
+                          <data android:scheme="content" android:mimeType="text/comma-separated-values" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          # --- Create MainActivity.java to read, format, and save the file ---
+          echo "Creating MainActivity.java..."
+          cat <<EOF > app/src/main/java/com/example/csvconverter/MainActivity.java
+          package com.example.csvconverter;
+
+          import android.content.ContentValues;
+          import android.content.Intent;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.os.Environment;
+          import android.provider.MediaStore;
+          import android.view.View;
+          import android.widget.Toast;
+          import androidx.appcompat.app.AppCompatActivity;
+          import com.example.csvconverter.databinding.ActivityMainBinding;
+          import java.io.BufferedReader;
+          import java.io.IOException;
+          import java.io.InputStream;
+          import java.io.InputStreamReader;
+          import java.io.OutputStream;
+          import java.text.SimpleDateFormat;
+          import java.util.Date;
+          import java.util.Locale;
+
+          public class MainActivity extends AppCompatActivity {
+
+              private ActivityMainBinding binding;
+              private String formattedContent = null;
+              private String originalFileName = "credentials";
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  binding = ActivityMainBinding.inflate(getLayoutInflater());
+                  setContentView(binding.getRoot());
+
+                  handleIntent(getIntent());
+
+                  binding.saveButton.setOnClickListener(v -> saveFormattedTextToFile());
+              }
+
+              private void handleIntent(Intent intent) {
+                  if (Intent.ACTION_VIEW.equals(intent.getAction()) && intent.getData() != null) {
+                      Uri uri = intent.getData();
+                      // Try to get a filename from the URI
+                      try (var cursor = getContentResolver().query(uri, new String[]{MediaStore.MediaColumns.DISPLAY_NAME}, null, null, null)) {
+                          if (cursor != null && cursor.moveToFirst()) {
+                              String name = cursor.getString(0);
+                              if (name != null) {
+                                  originalFileName = name.replaceFirst("[.][^.]+$", ""); // remove extension
+                              }
+                          }
+                      }
+                      
+                      try {
+                          String csvData = readTextFromUri(uri);
+                          formattedContent = formatCsvData(csvData);
+                          binding.contentView.setText(formattedContent);
+                          binding.saveButton.setVisibility(View.VISIBLE);
+                      } catch (IOException e) {
+                          binding.contentView.setText("Error reading file: " + e.getMessage());
+                          binding.saveButton.setVisibility(View.GONE);
+                      }
+                  } else {
+                      binding.contentView.setText("Welcome!\n\nOpen a CSV file to begin the conversion.");
+                      binding.saveButton.setVisibility(View.GONE);
+                  }
+              }
+
+              private String formatCsvData(String csvData) {
+                  StringBuilder builder = new StringBuilder();
+                  String[] lines = csvData.split("\\r?\\n");
+
+                  // Skip header line (i=1)
+                  for (int i = 1; i < lines.length; i++) {
+                      if (lines[i].trim().isEmpty()) continue;
+                      String[] values = lines[i].split(",", -1); // -1 to include trailing empty strings
+                      
+                      builder.append("Service:  ").append(get(values, 0)).append("\\n");
+                      builder.append("URL:      ").append(get(values, 1)).append("\\n");
+                      builder.append("Username: ").append(get(values, 2)).append("\\n");
+                      builder.append("Password: ").append(get(values, 3)).append("\\n");
+                      builder.append("-------------------------------------\\n");
+                  }
+                  return builder.toString();
+              }
+              
+              // Helper to safely get array values
+              private String get(String[] array, int index) {
+                  return (index >= 0 && index < array.length) ? array[index] : "";
+              }
+
+              private String readTextFromUri(Uri uri) throws IOException {
+                  StringBuilder stringBuilder = new StringBuilder();
+                  try (InputStream inputStream = getContentResolver().openInputStream(uri);
+                       BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
+                      String line;
+                      while ((line = reader.readLine()) != null) {
+                          stringBuilder.append(line).append("\\n");
+                      }
+                  }
+                  return stringBuilder.toString();
+              }
+
+              private void saveFormattedTextToFile() {
+                  if (formattedContent == null || formattedContent.isEmpty()) {
+                      Toast.makeText(this, "No content to save.", Toast.LENGTH_SHORT).show();
+                      return;
+                  }
+
+                  String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
+                  String fileName = originalFileName + "_" + timeStamp + ".txt";
+
+                  ContentValues values = new ContentValues();
+                  values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+                  values.put(MediaStore.MediaColumns.MIME_TYPE, "text/plain");
+                  values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+
+                  Uri uri = getContentResolver().insert(MediaStore.Files.getContentUri("external"), values);
+                  try (OutputStream os = getContentResolver().openOutputStream(uri)) {
+                      os.write(formattedContent.getBytes());
+                      Toast.makeText(this, "Saved to Downloads: " + fileName, Toast.LENGTH_LONG).show();
+                  } catch (IOException e) {
+                      Toast.makeText(this, "Failed to save file.", Toast.LENGTH_SHORT).show();
+                  }
+              }
+          }
+          EOF
+
+          # --- Create Layout XML with a ScrollView and a Button ---
+          echo "Creating activity_main.xml..."
+          cat <<EOF > app/src/main/res/layout/activity_main.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:tools="http://schemas.android.com/tools"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              tools:context=".MainActivity">
+
+              <ScrollView
+                  android:layout_width="match_parent"
+                  android:layout_height="match_parent"
+                  android:layout_above="@+id/save_button">
+                  <TextView
+                      android:id="@+id/content_view"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:padding="16dp"
+                      android:textSize="14sp"
+                      android:fontFamily="monospace"
+                      android:textIsSelectable="true"
+                      tools:text="CSV content will be displayed here." />
+              </ScrollView>
+
+              <Button
+                  android:id="@+id/save_button"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:layout_alignParentBottom="true"
+                  android:layout_margin="16dp"
+                  android:text="Save as .txt"
+                  android:visibility="gone"
+                  tools:visibility="visible" />
+          </RelativeLayout>
+          EOF
+
+          # --- Create other required resource files ---
+          echo "Creating resource files..."
+          cat <<EOF > app/src/main/res/values/strings.xml
+          <resources><string name="app_name">CSV Converter</string></resources>
+          EOF
+          cat <<EOF > app/src/main/res/values/themes.xml
+          <resources><style name="Theme.CSVConverter" parent="Theme.MaterialComponents.DayNight.DarkActionBar" /></resources>
+          EOF
+          mkdir -p app/src/main/res/mipmap-anydpi-v26
+          touch app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+          touch app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml
+
+          echo "Android project files created."
+        shell: bash
+
+      # Step 2: Build the Android App (unsigned debug APK)
+      - name: Build with Gradle
+        run: |
+          echo "include ':app'" > settings.gradle
+          wget https://services.gradle.org/distributions/gradle-8.5-bin.zip
+          unzip gradle-8.5-bin.zip
+          ./gradle-8.5/bin/gradle :app:assembleDebug
+
+      # Step 3: Upload APK to Bashupload
+      - name: Upload APK
+        run: |
+          echo "Uploading APK to bashupload.com..."
+          APK_FILE=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          if [ -f "$APK_FILE" ]; then
+            curl -F "file=@$APK_FILE" https://bashupload.com
+          else
+            echo "Error: APK file not found!"
+            exit 1
+          fi
+        shell: bash
